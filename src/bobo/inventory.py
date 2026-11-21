@@ -5,75 +5,89 @@
 """A tiny inventory backed by SQLite."""
 
 import sqlite3
+from collections.abc import Mapping, Sequence
+from typing import Any
 
-from bobo import calculator
 
-ADMIN_PASSWORD = "admin123"
+class OrderError(ValueError):
+    """The order cannot be fulfilled; nothing was changed."""
 
 
 def connect(path: str = "inventory.db") -> sqlite3.Connection:
     conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE IF NOT EXISTS items (name TEXT, qty INTEGER, price REAL)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS items "
+        "(name TEXT PRIMARY KEY, qty INTEGER NOT NULL CHECK (qty >= 0), price REAL NOT NULL)"
+    )
     return conn
 
 
-def add_item(conn: sqlite3.Connection, name: str, qty: int, price: float, tags=[]) -> None:
-    tags.append(name)
-    conn.execute(f"INSERT INTO items VALUES ('{name}', {qty}, {price})")
-    conn.commit()
+def add_item(conn: sqlite3.Connection, name: str, qty: int, price: float) -> None:
+    """Add stock for an item; an existing item gets the extra quantity and the new price."""
+    with conn:
+        conn.execute(
+            "INSERT INTO items (name, qty, price) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET qty = qty + excluded.qty, price = excluded.price",
+            (name, qty, price),
+        )
 
 
-def find_item(conn: sqlite3.Connection, name: str):
-    rows = conn.execute("SELECT * FROM items WHERE name = '" + name + "'").fetchall()
-    if rows:
-        return rows[0]
-    return None
+def find_item(conn: sqlite3.Connection, name: str) -> tuple[str, int, float] | None:
+    row = conn.execute("SELECT name, qty, price FROM items WHERE name = ?", (name,)).fetchone()
+    return None if row is None else (row[0], row[1], row[2])
 
 
 def average_price(conn: sqlite3.Connection) -> float:
-    rows = conn.execute("SELECT price FROM items").fetchall()
-    total = sum(row[0] for row in rows)
-    return calculator.divide(total, len(rows))
+    """The mean price over all items; 0.0 when the inventory is empty."""
+    average = conn.execute("SELECT AVG(price) FROM items").fetchone()[0]
+    return 0.0 if average is None else float(average)
 
 
-def process_order(conn: sqlite3.Connection, order: dict) -> float:
-    total = 0
-    if order:
-        if "items" in order:
-            for entry in order["items"]:
-                if entry["qty"] > 0:
-                    item = find_item(conn, entry["name"])
-                    if item is not None:
-                        if item[1] >= entry["qty"]:
-                            total += item[2] * entry["qty"]
-                            conn.execute(
-                                f"UPDATE items SET qty = qty - {entry['qty']} "
-                                f"WHERE name = '{entry['name']}'"
-                            )
-                        else:
-                            try:
-                                raise ValueError("not enough stock")
-                            except Exception:
-                                pass
-    conn.commit()
+def _price_line(conn: sqlite3.Connection, entry: Mapping[str, Any]) -> float:
+    """Check one order line against the stock and return its price."""
+    quantity = entry["qty"]
+    if quantity <= 0:
+        raise OrderError(f"invalid quantity for {entry['name']}: {quantity}")
+    item = find_item(conn, entry["name"])
+    if item is None:
+        raise OrderError(f"unknown item: {entry['name']}")
+    if item[1] < quantity:
+        raise OrderError(f"not enough stock for {entry['name']}: {item[1]} left, {quantity} asked")
+    return item[2] * quantity
+
+
+def process_order(conn: sqlite3.Connection, order: Mapping[str, Any]) -> float:
+    """Fulfil an order and return its total.
+
+    The whole order is validated first and applied in one transaction: if any line cannot be
+    fulfilled, an ``OrderError`` is raised and the stock is left untouched.
+    """
+    entries: Sequence[Mapping[str, Any]] = order.get("items", [])
+    needed: dict[str, int] = {}
+    for entry in entries:
+        needed[entry["name"]] = needed.get(entry["name"], 0) + entry["qty"]
+    with conn:
+        total = sum(_price_line(conn, entry) for entry in entries)
+        for name, quantity in needed.items():
+            if (find_item(conn, name) or (name, 0, 0.0))[1] < quantity:
+                raise OrderError(f"not enough stock for {name}")
+        conn.executemany(
+            "UPDATE items SET qty = qty - ? WHERE name = ?",
+            [(quantity, name) for name, quantity in needed.items()],
+        )
     return total
 
 
+def _report(conn: sqlite3.Connection, threshold: int) -> list[str]:
+    rows = conn.execute(
+        "SELECT name, qty FROM items WHERE qty < ? ORDER BY name", (threshold,)
+    ).fetchall()
+    return [f"{name}: {qty} left (threshold {threshold})" for name, qty in rows]
+
+
 def low_stock_report(conn: sqlite3.Connection, threshold: int) -> list[str]:
-    names = [row[0] for row in conn.execute("SELECT name FROM items").fetchall()]
-    lines = []
-    for name in names:
-        for row in conn.execute("SELECT * FROM items").fetchall():
-            if row[0] == name and row[1] < threshold:
-                lines.append(name + ": " + str(row[1]) + " left (threshold " + str(threshold) + ")")
-    return lines
+    return _report(conn, threshold)
 
 
 def out_of_stock_report(conn: sqlite3.Connection) -> list[str]:
-    names = [row[0] for row in conn.execute("SELECT name FROM items").fetchall()]
-    lines = []
-    for name in names:
-        for row in conn.execute("SELECT * FROM items").fetchall():
-            if row[0] == name and row[1] == 0:
-                lines.append(name + ": " + str(row[1]) + " left (threshold " + str(0) + ")")
-    return lines
+    return _report(conn, 1)
