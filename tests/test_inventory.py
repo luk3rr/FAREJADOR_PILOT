@@ -71,3 +71,16 @@ def test_the_reports_list_only_what_is_low_or_out() -> None:
     inventory.add_item(conn, "ink", 0, 9.0)
     assert inventory.low_stock_report(conn, 5) == ["ink: 0 left (threshold 5)"]
     assert inventory.out_of_stock_report(conn) == ["ink: 0 left (threshold 1)"]
+
+
+def test_a_writer_on_another_connection_waits_while_an_order_is_in_progress(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = str(tmp_path / "inv.db")
+    first = inventory.connect(path)
+    inventory.add_item(first, "pen", 10, 2.5)
+    second = inventory.sqlite3.connect(path, timeout=0.05)
+    first.execute("BEGIN IMMEDIATE")  # what process_order does before it reads anything
+    with pytest.raises(inventory.sqlite3.OperationalError, match="locked"):
+        second.execute("UPDATE items SET qty = 0")
+    first.rollback()
+    second.close()
+    first.close()

@@ -59,22 +59,28 @@ def _price_line(conn: sqlite3.Connection, entry: Mapping[str, Any]) -> float:
 def process_order(conn: sqlite3.Connection, order: Mapping[str, Any]) -> float:
     """Fulfil an order and return its total.
 
-    The whole order is validated first and applied in one transaction: if any line cannot be
-    fulfilled, an ``OrderError`` is raised and the stock is left untouched.
+    The write transaction opens before anything is read, and the stock check is part of each
+    ``UPDATE``, so another connection cannot change the stock in between. If any line cannot be
+    fulfilled, an ``OrderError`` is raised and nothing is changed.
     """
     entries: Sequence[Mapping[str, Any]] = order.get("items", [])
     needed: dict[str, int] = {}
     for entry in entries:
         needed[entry["name"]] = needed.get(entry["name"], 0) + entry["qty"]
-    with conn:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
         total = sum(_price_line(conn, entry) for entry in entries)
         for name, quantity in needed.items():
-            if (find_item(conn, name) or (name, 0, 0.0))[1] < quantity:
+            updated = conn.execute(
+                "UPDATE items SET qty = qty - ? WHERE name = ? AND qty >= ?",
+                (quantity, name, quantity),
+            )
+            if updated.rowcount == 0:
                 raise OrderError(f"not enough stock for {name}")
-        conn.executemany(
-            "UPDATE items SET qty = qty - ? WHERE name = ?",
-            [(quantity, name) for name, quantity in needed.items()],
-        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     return total
 
 
