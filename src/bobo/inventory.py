@@ -32,6 +32,8 @@ def connect(path: str = "inventory.db") -> sqlite3.Connection:
 def add_item(conn: sqlite3.Connection, name: str, qty: int, price: float) -> None:
     """Add stock for an item; an existing item gets the extra quantity and the new price."""
     qty = _check_quantity(qty, name)
+    if qty < 0:
+        raise OrderError(f"quantity for {name} cannot be negative: {qty}")
     with conn:
         conn.execute(
             "INSERT INTO items (name, qty, price) VALUES (?, ?, ?) "

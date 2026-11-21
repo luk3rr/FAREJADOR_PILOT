@@ -95,3 +95,17 @@ def test_only_whole_numbers_are_accepted_as_a_quantity(quantity: object) -> None
         inventory.process_order(conn, {"items": [{"name": "pen", "qty": quantity}]})
     assert inventory.find_item(conn, "pen") == ("pen", 10, 2.5)
     assert inventory.find_item(conn, "ink") is None
+
+
+def test_adding_a_negative_quantity_cannot_take_stock_away() -> None:
+    conn = make()
+    with pytest.raises(inventory.OrderError, match="cannot be negative"):
+        inventory.add_item(conn, "pen", -1, 2.5)
+    assert inventory.find_item(conn, "pen") == ("pen", 10, 2.5)
+
+
+def test_adding_zero_is_allowed_and_creates_an_out_of_stock_item() -> None:
+    conn = make()
+    inventory.add_item(conn, "ink", 0, 9.0)
+    assert inventory.find_item(conn, "ink") == ("ink", 0, 9.0)
+    assert inventory.out_of_stock_report(conn) == ["ink: 0 left (threshold 1)"]
