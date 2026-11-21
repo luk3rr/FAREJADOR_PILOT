@@ -84,3 +84,14 @@ def test_a_writer_on_another_connection_waits_while_an_order_is_in_progress(tmp_
     first.rollback()
     second.close()
     first.close()
+
+
+@pytest.mark.parametrize("quantity", [1.5, 2.0, True, "3", None])
+def test_only_whole_numbers_are_accepted_as_a_quantity(quantity: object) -> None:
+    conn = make()
+    with pytest.raises(inventory.OrderError, match="whole number"):
+        inventory.add_item(conn, "ink", quantity, 1.0)  # type: ignore[arg-type]
+    with pytest.raises(inventory.OrderError, match="whole number"):
+        inventory.process_order(conn, {"items": [{"name": "pen", "qty": quantity}]})
+    assert inventory.find_item(conn, "pen") == ("pen", 10, 2.5)
+    assert inventory.find_item(conn, "ink") is None

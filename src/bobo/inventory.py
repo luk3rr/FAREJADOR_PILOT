@@ -13,6 +13,13 @@ class OrderError(ValueError):
     """The order cannot be fulfilled; nothing was changed."""
 
 
+def _check_quantity(quantity: object, name: str) -> int:
+    """A quantity is a whole number of units; ``bool`` and fractions are rejected."""
+    if isinstance(quantity, bool) or not isinstance(quantity, int):
+        raise OrderError(f"quantity for {name} must be a whole number: {quantity!r}")
+    return quantity
+
+
 def connect(path: str = "inventory.db") -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute(
@@ -24,6 +31,7 @@ def connect(path: str = "inventory.db") -> sqlite3.Connection:
 
 def add_item(conn: sqlite3.Connection, name: str, qty: int, price: float) -> None:
     """Add stock for an item; an existing item gets the extra quantity and the new price."""
+    qty = _check_quantity(qty, name)
     with conn:
         conn.execute(
             "INSERT INTO items (name, qty, price) VALUES (?, ?, ?) "
@@ -45,7 +53,7 @@ def average_price(conn: sqlite3.Connection) -> float:
 
 def _price_line(conn: sqlite3.Connection, entry: Mapping[str, Any]) -> float:
     """Check one order line against the stock and return its price."""
-    quantity = entry["qty"]
+    quantity = _check_quantity(entry["qty"], entry["name"])
     if quantity <= 0:
         raise OrderError(f"invalid quantity for {entry['name']}: {quantity}")
     item = find_item(conn, entry["name"])
@@ -66,7 +74,8 @@ def process_order(conn: sqlite3.Connection, order: Mapping[str, Any]) -> float:
     entries: Sequence[Mapping[str, Any]] = order.get("items", [])
     needed: dict[str, int] = {}
     for entry in entries:
-        needed[entry["name"]] = needed.get(entry["name"], 0) + entry["qty"]
+        quantity = _check_quantity(entry["qty"], entry["name"])
+        needed[entry["name"]] = needed.get(entry["name"], 0) + quantity
     conn.execute("BEGIN IMMEDIATE")
     try:
         total = sum(_price_line(conn, entry) for entry in entries)
