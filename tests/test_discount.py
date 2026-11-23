@@ -41,3 +41,9 @@ def test_blocked_customer_gets_no_discount(db) -> None:
 def test_unreadable_database_gets_no_discount(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(discount, "DB_PATH", str(tmp_path / "missing" / "bobo.db"))
     assert discount.discount(1, "vip", 100) == 100
+
+
+def test_unreadable_database_is_logged(tmp_path, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(discount, "DB_PATH", str(tmp_path / "missing" / "bobo.db"))
+    discount.discount(1, "vip", 100)
+    assert "Could not check whether customer 1 is blocked" in caplog.text

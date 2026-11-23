@@ -4,8 +4,11 @@
 
 """Customer discounts: a rate by customer kind, a volume bonus and a blocked-customer check."""
 
+import logging
 import sqlite3
 from contextlib import closing
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = "bobo.db"
 
@@ -22,6 +25,7 @@ def _is_blocked(customer_id: int) -> bool:
                 "SELECT blocked FROM customers WHERE id = ?", (customer_id,)
             ).fetchone()
     except sqlite3.Error:
+        logger.exception("Could not check whether customer %s is blocked", customer_id)
         return True
     return bool(row and row[0])
 
